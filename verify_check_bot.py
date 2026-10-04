@@ -155,16 +155,17 @@ def message_text(msg: discord.Message) -> str:
     return "\n".join(p for p in parts if p)
 
 
-def split_invite_text(text: str) -> tuple[str, str] | None:
-    """Returns (joiner_part, inviter_raw) or None if this is not an invite message."""
+def split_invite_text(text: str) -> tuple[str, str, str] | None:
+    """Returns (joiner_part, rest_without_inviter, inviter_raw) or None if not an invite message."""
     m = INVITED_BY_RE.search(text)
     if not m:
         return None
     joiner = text[: m.start()]
+    rest = text[: m.start()] + "\n" + text[m.end():]   # whole message minus the inviter's own text
     inviter = clean(m.group(1)).strip(" .,:;-")
     if not inviter:
         return None
-    return joiner, inviter
+    return joiner, rest, inviter
 
 
 def member_name_keys(member: discord.Member) -> set[str]:
@@ -197,18 +198,23 @@ async def find_inviter_raw(guild: discord.Guild, member: discord.Member) -> str 
     if ch is None:
         return None
     name_fallback: str | None = None
+    seen = 0
     try:
         async for msg in ch.history(limit=INVITE_HISTORY_LIMIT):
             parsed = split_invite_text(message_text(msg))
             if parsed is None:
                 continue
-            joiner, inviter = parsed
-            if joiner_matches_id(joiner, member):
+            seen += 1
+            joiner, rest, inviter = parsed
+            if joiner_matches_id(rest, member):
                 return inviter
             if name_fallback is None and joiner_matches_name(joiner, member):
                 name_fallback = inviter
-    except discord.HTTPException:
+    except discord.HTTPException as e:
+        print(f"⚠️ Could not read #{ch.name}: {e}")
         return name_fallback
+    if name_fallback is None:
+        print(f"ℹ️ No invite message for {member} ({member.id}) in #{ch.name} — {seen} invite messages checked")
     return name_fallback
 
 
