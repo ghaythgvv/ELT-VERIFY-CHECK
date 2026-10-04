@@ -57,7 +57,8 @@ UT_STAFF_ROLE_ID: int | None = None
 # InviteLogger channel: found by name, or paste the channel ID to force it.
 INVITE_CHANNEL_ID: int | None = None
 INVITE_CHANNEL_NAME = "invite"
-INVITE_HISTORY_LIMIT = 1500  # how many recent messages of that channel are searched
+INVITE_HISTORY_LIMIT = 1500  # live search depth (fallback)
+INVITE_SCAN_LIMIT = 50000    # startup scan depth: builds a lookup of every join in -INVITE
 
 EMBED_COLOR = 0x8B2BE2
 SERVER_FOOTER = "ELT | ELITE LEADERS COMMUNITY"
@@ -192,8 +193,55 @@ def joiner_matches_name(joiner: str, member: discord.Member) -> bool:
     return bool(key) and key in member_name_keys(member)
 
 
+
+# ---- lookup built once at startup (and kept up to date), so old members are found too ----
+invite_index_id: dict[int, str] = {}     # member id  -> inviter text
+invite_index_name: dict[str, str] = {}   # normalised joiner name -> inviter text
+BARE_ID_RE = re.compile(r"(?<!\d)(\d{17,20})(?!\d)")
+
+
+def index_message(msg: discord.Message, overwrite: bool) -> None:
+    parsed = split_invite_text(message_text(msg))
+    if parsed is None:
+        return
+    joiner, rest, inviter = parsed
+    ids = {int(x) for x in MENTION_RE.findall(rest)} | {int(x) for x in BARE_ID_RE.findall(rest)}
+    for i in ids:
+        if overwrite or i not in invite_index_id:
+            invite_index_id[i] = inviter
+    lines = [ln for ln in clean(joiner).splitlines() if ln.strip()]
+    if lines:
+        key = norm(JOINED_TAIL_RE.sub("", lines[-1]).strip().lstrip("@"))
+        if key and (overwrite or key not in invite_index_name):
+            invite_index_name[key] = inviter
+
+
+async def build_invite_index(guild: discord.Guild) -> None:
+    ch = find_invite_channel(guild)
+    if ch is None:
+        return
+    count = 0
+    try:
+        async for msg in ch.history(limit=INVITE_SCAN_LIMIT):   # newest first: newest wins
+            index_message(msg, overwrite=False)
+            count += 1
+    except discord.HTTPException as e:
+        print(f"⚠️ Invite scan stopped: {e}")
+    print(f"✅ Invite index ready: {count} messages scanned, {len(invite_index_id)} members indexed")
+
+
+@bot.event
+async def on_message(message: discord.Message):
+    if message.guild and message.guild.id == GUILD_ID:
+        ch = find_invite_channel(message.guild)
+        if ch is not None and message.channel.id == ch.id:
+            index_message(message, overwrite=True)
+
+
 async def find_inviter_raw(guild: discord.Guild, member: discord.Member) -> str | None:
     """Searches the -INVITE channel newest -> oldest. An ID/mention match wins over a name match."""
+    if member.id in invite_index_id:
+        return invite_index_id[member.id]
     ch = find_invite_channel(guild)
     if ch is None:
         return None
@@ -214,6 +262,9 @@ async def find_inviter_raw(guild: discord.Guild, member: discord.Member) -> str 
         print(f"⚠️ Could not read #{ch.name}: {e}")
         return name_fallback
     if name_fallback is None:
+        for k in member_name_keys(member):
+            if k in invite_index_name:
+                return invite_index_name[k]
         print(f"ℹ️ No invite message for {member} ({member.id}) in #{ch.name} — {seen} invite messages checked")
     return name_fallback
 
@@ -310,6 +361,7 @@ async def on_ready():
         return
 
     await refresh_invites(guild)
+    asyncio.create_task(build_invite_index(guild))
     print(f"ℹ️ Invite tracker: {len(invite_cache)} invites cached" if invite_cache
           else "ℹ️ Invite tracker off (needs Manage Server) — InviteLogger lookup still works")
 
