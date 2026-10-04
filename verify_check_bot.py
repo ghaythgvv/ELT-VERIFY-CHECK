@@ -135,7 +135,8 @@ def is_staff(member: discord.abc.User) -> bool:
 # ----------------------------------------------------------------- reading the -INVITE channel
 # "<joiner> just joined. They were invited by <inviter> who now has N invites"
 INVITED_BY_RE = re.compile(
-    r"invited\s+by\s+(.+?)(?=\s+who\s+now\s+has|\s*\(|\s*\n|\s*$)",
+    r"invited\s+by\s+(.+?)(?=\s+(?:who|and|that)\s+(?:now\s+)?has\b|\s+(?:who|and|that)\s+now\b"
+    r"|\s+has\s+now\b|\s+now\s+has\b|\s*\(|\s*\n|\s*$)",
     re.IGNORECASE | re.DOTALL,
 )
 JOINED_TAIL_RE = re.compile(r"\s*(?:just\s+|has\s+)*joined.*$", re.IGNORECASE | re.DOTALL)
